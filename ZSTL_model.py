@@ -28,6 +28,13 @@ def getPred_binClass(x_loss, w_pred, model, model_shape):
   
   return pred
 
+def getPred_class(x_loss, w_pred, model, model_shape):
+  reshaped_w = utils.reshape_w(w_pred, model_shape)    
+  pred_y = model(reshaped_w, x_loss)
+  pred_y = torch.sigmoid(pred_y)
+  return pred_y
+
+
 
 class ZSTL:
     def __init__(self, w_kb, a_kb, x_kb, base_model, param_dict):
@@ -51,6 +58,12 @@ class ZSTL:
         self.a_kb_opt = a_kb.clone().detach().requires_grad_(False)
         self.outer_opt = torch.optim.Adam(self.hp, lr=param_dict['outer lr'])
 
+        if param_dict['atten_activation'] == 'Sparsemax':
+            self.atten_activation = Sparsemax(dim=1)
+        elif param_dict['atten_activation'] == 'Softmax':
+            print('softmax selected')
+            self.atten_activation = nn.Softmax(dim=1)
+
         if param_dict['loss'] == 'mse':
             self.loss = nn.MSELoss()
             self.metric = self.task_transfer_loss
@@ -68,7 +81,7 @@ class ZSTL:
         except:
             print('a_kb ', self.a_kb_opt)
             print('w_kb ', self.hp[1])
-            print('logit ', logit)
+            print('logit ', pred)
         return loss
 
     def train(self, train_loader, test_loader, max_iter = 1000):
@@ -78,7 +91,7 @@ class ZSTL:
         test_w = test_w.squeeze().t()
 
         test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
-        print('init mean test loss {};'.format(test_loss_batch))
+        print('init mean test metric {};'.format(test_loss_batch))
 
         train_l_lst = []
         test_l_lst = []
@@ -101,13 +114,13 @@ class ZSTL:
             test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
             test_l_lst.append(utils.toNumpy(test_loss_batch.clone().detach().requires_grad_(False)))
 
-            if (i+1) % 10 == 0:
+            if (i+1) % 10 == 0 or i == 0:
                 print('{}/{} o_loss {}; mean test loss {} with mse loss in atten align {}'.\
                     format(i+1, max_iter, o_loss, test_loss_batch, mse_loss))
 
         print('lr ', self.param_dict['outer lr'])
         plt.plot(train_l_lst, label='Traning: Outer Objectives')
-        plt.plot(test_l_lst, label='Testing: ZSTL MSE')
+        plt.plot(test_l_lst, label='Testing: ZSTL Metric')
         plt.xlabel('Iteration')
         plt.legend()
         plt.show()
