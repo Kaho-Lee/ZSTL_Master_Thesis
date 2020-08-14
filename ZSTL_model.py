@@ -68,11 +68,13 @@ class ZSTL:
             self.loss = nn.MSELoss()
             self.metric = self.task_transfer_loss
             self.getPred = getPred_regress
+            self.getPred_batch = self.getPred_batch_regress
         elif param_dict['loss'] == 'binary class':
             #self.loss = nn.BCEWithLogitsLoss()
             self.loss = self.sigmoid_loss
             self.metric = self.task_transfer_bi_acc
             self.getPred = getPred_binClass
+            self.getPred_batch = self.getPred_batch_class
 
     def sigmoid_loss(self, pred, target):
         
@@ -120,6 +122,12 @@ class ZSTL:
 
         print('lr ', self.param_dict['outer lr'])
         plt.plot(train_l_lst, label='Traning: Outer Objectives')
+        
+        plt.xlabel('Iteration')
+        plt.legend()
+        plt.show()
+
+        
         plt.plot(test_l_lst, label='Testing: ZSTL Metric')
         plt.xlabel('Iteration')
         plt.legend()
@@ -241,13 +249,27 @@ class ZSTL:
 
         return affinity
 
-    def getPred_batch( self,x,  weight, model, model_shape):
+    def getPred_batch_regress( self,x,  weight, model, model_shape):
         pred_y_batch = []
         batch_size = weight.size()[1]
         for t in range(batch_size):
             cur_x = x[t,:].float()
             cur_w = weight[:,t].unsqueeze(0).float()
             pred_y = self.getPred(cur_x, cur_w, model, model_shape)
+            pred_y_batch.append(pred_y.t())
+
+        pred_y_batch = torch.cat(pred_y_batch, dim=0)
+        return pred_y_batch
+
+    def getPred_batch_class( self,x,  weight, model, model_shape):
+        pred_y_batch = []
+        batch_size = weight.size()[1]
+        for t in range(batch_size):
+            cur_x = x[t,:].float()
+            cur_w = weight[:,t].unsqueeze(0).float()
+            pred_y = self.getPred(cur_x, cur_w, model, model_shape)
+            pred_y[pred_y>=0.5] = torch.ones_like(pred_y[pred_y>=0.5])
+            pred_y[pred_y<0.5] = torch.zeros_like(pred_y[pred_y<0.5])
             pred_y_batch.append(pred_y.t())
 
         pred_y_batch = torch.cat(pred_y_batch, dim=0)
