@@ -28,12 +28,6 @@ def getPred_binClass(x_loss, w_pred, model, model_shape):
   
   return pred
 
-def getPred_class(x_loss, w_pred, model, model_shape):
-  reshaped_w = utils.reshape_w(w_pred, model_shape)    
-  pred_y = model(reshaped_w, x_loss)
-  pred_y = torch.sigmoid(pred_y)
-  return pred_y
-
 
 
 class ZSTL:
@@ -55,6 +49,7 @@ class ZSTL:
 
         # indx 1: w_r; indx 2: w_kb
         self.hp = [torch.eye(self.dm, requires_grad=True), self.w_kb.clone().detach().requires_grad_(True)]
+        #self.hp = [torch.eye(self.dm, requires_grad=True)]
         self.a_kb_opt = a_kb.clone().detach().requires_grad_(False)
         self.outer_opt = torch.optim.Adam(self.hp, lr=param_dict['outer lr'])
 
@@ -117,8 +112,9 @@ class ZSTL:
             test_l_lst.append(utils.toNumpy(test_loss_batch.clone().detach().requires_grad_(False)))
 
             if (i+1) % 10 == 0 or i == 0:
-                print('{}/{} o_loss {}; mean test loss {} with mse loss in atten align {}'.\
-                    format(i+1, max_iter, o_loss, test_loss_batch, mse_loss))
+                train_metric_batch = self.metric(train_a, self.a_kb_opt, train_x, train_y)
+                print('{}/{} o_loss {}; m train metric {}; m test metric {}; align loss  {}'.\
+                    format(i+1, max_iter, o_loss, train_metric_batch, test_loss_batch, mse_loss))
 
         print('lr ', self.param_dict['outer lr'])
         plt.plot(train_l_lst, label='Traning: Outer Objectives')
@@ -144,13 +140,23 @@ class ZSTL:
 
         totIter = 200
 
-        y_kb_pred = self.getPred_batch(x_loss,  weight_kb, self.model, self.model_shape)
-        affinity_y_kb = cal_affinity(y_kb_pred, y_kb_pred.t())
+        #print('weight_train ', weight_train.shape, 'weight_kb ', weight_kb.shape)
+        affinity_y_kb = cal_affinity(weight_kb.t(), weight_kb)
         y_kb_atten = cal_atten(affinity_y_kb)
+        #print('y_kb_atten ', y_kb_atten.shape, torch.sum(y_kb_atten, dim=1))
 
-        y_train_pred = self.getPred_batch(x_loss,  weight_train, self.model, self.model_shape)
-        affinity_y_train_kb = cal_affinity(y_train_pred, y_kb_pred.t())
+        affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
         y_train_kb_atten = cal_atten(affinity_y_train_kb)
+        #print('y_train_kb_atten ', y_train_kb_atten.shape, torch.sum(y_train_kb_atten, dim=1))
+        #a = ppp
+
+        # y_kb_pred = self.getPred_batch(x_loss,  weight_kb, self.model, self.model_shape)
+        # affinity_y_kb = cal_affinity(y_kb_pred, y_kb_pred.t())
+        # y_kb_atten = cal_atten(affinity_y_kb)
+
+        # y_train_pred = self.getPred_batch(x_loss,  weight_train, self.model, self.model_shape)
+        # affinity_y_train_kb = cal_affinity(y_train_pred, y_kb_pred.t())
+        # y_train_kb_atten = cal_atten(affinity_y_train_kb)
         
         for t in range(totIter):
             affinity_attr_kb = cal_affinity(attr_kb_opt[0].t(), attr_kb_opt[0])
