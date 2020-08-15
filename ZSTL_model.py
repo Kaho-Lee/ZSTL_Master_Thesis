@@ -145,6 +145,8 @@ class ZSTL:
         y_kb_atten = cal_atten(affinity_y_kb)
         #print('y_kb_atten ', y_kb_atten.shape, torch.sum(y_kb_atten, dim=1))
 
+        #w_pred = self.analytical_soln_atten(weight_kb, attr_train, attr_kb, self.hp[0].clone().detach().requires_grad_(False))
+
         affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
         y_train_kb_atten = cal_atten(affinity_y_train_kb)
         #print('y_train_kb_atten ', y_train_kb_atten.shape, torch.sum(y_train_kb_atten, dim=1))
