@@ -31,12 +31,17 @@ def getPred_binClass(x_loss, w_pred, model, model_shape):
 
 
 class ZSTL:
-    def __init__(self, w_kb, a_kb, x_kb, base_model, param_dict):
+    def __init__(self, w_kb, a_kb, x_kb, base_model, param_dict, device):
         self.param_dict = param_dict
-        self.w_kb = w_kb
-        self.a_kb = a_kb
-        self.x_kb = x_kb
+
+        #pre-set to gpu
+        self.device = device
+        self.w_kb = w_kb.to(self.device) 
+        self.a_kb = a_kb.to(self.device)
+        self.x_kb = x_kb.to(self.device)
         self.model = base_model
+        
+
         self.model_shape = param_dict['model_shape']
         self.d = param_dict['d']
         self.dm = param_dict['dm']
@@ -44,14 +49,18 @@ class ZSTL:
         rho - regu coef for w_kb
         mu - regu coef for a_kb
         '''
-        self.rho = param_dict['rho']
-        self.mu = param_dict['mu']
+        self.rho = torch.tensor(param_dict['rho']).to(self.device)
+        self.mu = torch.tensor(param_dict['mu']).to(self.device)
 
-        # indx 1: w_r; indx 2: w_kb
-        self.hp = [torch.eye(self.dm, requires_grad=True), self.w_kb.clone().detach().requires_grad_(True)]
+        # indx 1: w_r; indx 2: w_kb (need mannual set to gpu )
+        self.hp = [torch.eye(self.dm, requires_grad=True,device=self.device), \
+            self.w_kb.clone().detach().requires_grad_(True).to(self.device)]
         #self.hp = [torch.eye(self.dm, requires_grad=True)]
-        self.a_kb_opt = a_kb.clone().detach().requires_grad_(False)
+        self.a_kb_opt = a_kb.clone().detach().requires_grad_(False).to(self.device)
         self.outer_opt = torch.optim.Adam(self.hp, lr=param_dict['outer lr'])
+
+        #for alignment loss
+        self.tolerance = torch.tensor(1e-4, dtype=torch.float32, requires_grad=False).to(self.device)
 
         if param_dict['atten_activation'] == 'Sparsemax':
             self.atten_activation = Sparsemax(dim=1)
@@ -72,7 +81,7 @@ class ZSTL:
             self.getPred_batch = self.getPred_batch_class
 
     def sigmoid_loss(self, pred, target):
-        
+        #op only
         try:
             loss = F.binary_cross_entropy(pred, target)
         except:
@@ -82,41 +91,45 @@ class ZSTL:
         return loss
 
     def train(self, train_loader, test_loader, max_iter = 1000):
+        #need mannual set to gpu
         test_batch = next(iter(test_loader))
-        test_a, test_w, test_x, test_y = test_batch[0].float(), test_batch[1].float(), test_batch[2].float(), test_batch[3].float()
+        test_a, test_w, test_x, test_y = test_batch[0].float().to(self.device), test_batch[1].float().to(self.device), \
+            test_batch[2].float().to(self.device), test_batch[3].float().to(self.device)
         test_a = test_a.squeeze().t()
         test_w = test_w.squeeze().t()
 
-        test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
+        test_loss_batch = self.metric(test_a,  test_x, test_y)
         align_loss = self.align_loss(test_w, self.hp[1].clone().detach().requires_grad_(False), \
-                test_a, self.a_kb_opt)
+                test_a)
         print('init mean test metric {}; align loss {}'.format(test_loss_batch, align_loss))
 
         train_l_lst = []
         test_l_lst = []
         for i in range(max_iter):
+            #need mannual set to gpu
             train_batch = next(iter(train_loader))
-            train_a, train_w, train_x, train_y = train_batch[0].float(), train_batch[1].float(), train_batch[2].float(), train_batch[3].float()
+            train_a, train_w, train_x, train_y = train_batch[0].float().to(self.device), train_batch[1].float().to(self.device),\
+                train_batch[2].float().to(self.device), train_batch[3].float().to(self.device)
             #print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
             train_a = train_a.squeeze().t()
             train_w = train_w.squeeze().t()
             # print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
             # a = ppp
 
-            train_loss_batch = self.task_transfer_loss(train_a, self.a_kb_opt, train_x, train_y)
+            train_loss_batch = self.task_transfer_loss(train_a, train_x, train_y)
             o_loss = train_loss_batch + self.rho*torch.pow(torch.norm(self.hp[1]), 2)
-            train_l_lst.append(utils.toNumpy(o_loss.clone().detach().requires_grad_(False)))
+            train_l_lst.append(utils.toNumpy(o_loss.cpu().clone().detach().requires_grad_(False)))
             self.outer_opt.zero_grad()
             o_loss.backward()
             self.outer_opt.step()
 
             self.a_kb_opt, mse_loss = self.attention_alignment(train_w, self.hp[1].clone().detach().requires_grad_(False), \
-                train_a, self.a_kb_opt, train_x)
+                train_a, train_x)
 
             if (i+1) % 10 == 0 or i == 0:
-                test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
-                test_l_lst.append(utils.toNumpy(test_loss_batch.clone().detach().requires_grad_(False)))
-                train_metric_batch = self.metric(train_a, self.a_kb_opt, train_x, train_y)
+                test_loss_batch = self.metric(test_a, test_x, test_y)
+                test_l_lst.append(utils.toNumpy(test_loss_batch.cpu().clone().detach().requires_grad_(False)))
+                train_metric_batch = self.metric(train_a,  train_x, train_y)
                 print('{}/{} o_loss {}; m train metric {}; m test metric {}; align loss  {}'.\
                     format(i+1, max_iter, o_loss, train_metric_batch, test_loss_batch, mse_loss))
 
@@ -135,8 +148,8 @@ class ZSTL:
 
         return 0
 
-    def align_loss(self,weight_train, weight_kb, attr_train, attr_kb):
-        cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float)))
+    def align_loss(self,weight_train, weight_kb, attr_train):
+        cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float).to(self.device)))
         cal_atten = lambda a : a/torch.sum(a, dim=1, keepdim=True)
 
         affinity_y_kb = cal_affinity(weight_kb.t(), weight_kb)
@@ -145,28 +158,25 @@ class ZSTL:
         affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
         y_train_kb_atten = cal_atten(affinity_y_train_kb)
 
-        prev_obj = torch.tensor(0., dtype=torch.float32, requires_grad=False)
-        affinity_attr_kb = cal_affinity(attr_kb.t(), attr_kb)
+        affinity_attr_kb = cal_affinity(self.a_kb_opt.t(), self.a_kb_opt)
         attr_kb_atten = cal_atten(affinity_attr_kb)
-        affinity_attr_train_kb = cal_affinity(attr_train.t(), attr_kb)
+        affinity_attr_train_kb = cal_affinity(attr_train.t(), self.a_kb_opt)
         attr_train_kb_atten = cal_atten(affinity_attr_train_kb)
         mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
         mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
-        mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(attr_kb), 2)
+        mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(self.a_kb_opt), 2)
 
         return mse_loss.clone().detach().requires_grad_(False)
 
 
 
-    def attention_alignment(self, weight_train, weight_kb, attr_train, attr_kb, x_loss):
+    def attention_alignment(self, weight_train, weight_kb, attr_train, x_loss):
         cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float)))
         cal_atten = lambda a : a/torch.sum(a, dim=1, keepdim=True)
         
-        attr_kb_opt = [attr_kb.clone().detach().requires_grad_(True)] #new var
+        attr_kb_opt = [self.a_kb_opt.clone().detach().requires_grad_(True)] #new var, pay attention
         opt = torch.optim.Adam(attr_kb_opt, lr=self.param_dict['align lr'])
-        tolerance = torch.tensor(1e-4, dtype=torch.float32, requires_grad=False)
         
-
         totIter = 200
 
         #print('weight_train ', weight_train.shape, 'weight_kb ', weight_kb.shape)
@@ -183,7 +193,7 @@ class ZSTL:
         # y_train_pred = self.getPred_batch(x_loss,  weight_train, self.model, self.model_shape)
         # affinity_y_train_kb = cal_affinity(y_train_pred, y_kb_pred.t())
         # y_train_kb_atten = cal_atten(affinity_y_train_kb)
-        prev_obj = torch.tensor(0., dtype=torch.float32, requires_grad=False)
+        prev_obj = torch.tensor(0., dtype=torch.float32, requires_grad=False).to(self.device)
         affinity_attr_kb = cal_affinity(attr_kb_opt[0].t(), attr_kb_opt[0])
         attr_kb_atten = cal_atten(affinity_attr_kb)
         affinity_attr_train_kb = cal_affinity(attr_train.t(), attr_kb_opt[0])
@@ -191,9 +201,9 @@ class ZSTL:
         mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
         mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
         mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
-        i = 0
-        while i < totIter and torch.abs(mse_loss - prev_obj) >= tolerance*torch.abs(prev_obj):
-            i += 1
+        t = 0
+        while t < totIter and torch.abs(mse_loss - prev_obj) >= self.tolerance*torch.abs(prev_obj):
+            t += 1
             opt.zero_grad()
             mse_loss.backward()
             opt.step()
@@ -206,27 +216,27 @@ class ZSTL:
             attr_train_kb_atten = cal_atten(affinity_attr_train_kb)
 
             
-            mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
-            mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
-            mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
-            if mse_loss_kb + mse_loss_train_kb <= tolerance:
-                break
+            # mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
+            # mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
+            mse_loss = F.mse_loss(attr_kb_atten, y_kb_atten) + F.mse_loss(attr_train_kb_atten, y_train_kb_atten)\
+                 + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
+            
             
         #print('{}/{}: mse loss is {}'.format(t, totIter, mse_loss))
         return attr_kb_opt[0].clone().detach().requires_grad_(False), mse_loss
 
     def zero_shot_transfer(self, test_loader):
-        test_batch = next(iter(test_loader))
-        test_a, test_w, test_x, test_y = test_batch[0].float(), test_batch[1].float(), test_batch[2].float(), test_batch[3].float()
+        test_a, test_w, test_x, test_y = test_batch[0].float().to(self.device), test_batch[1].float().to(self.device), \
+            test_batch[2].float().to(self.device), test_batch[3].float().to(self.device)
         test_a = test_a.squeeze().t()
         test_w = test_w.squeeze().t()
 
         test_metric_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
         return test_metric_batch
 
-    def task_transfer_loss(self, attr_test, attr_kb, x, y):
-        w_pred = self.task_transfer(attr_test, attr_kb)
-        o_loss = torch.tensor(0.0, requires_grad=True, dtype=float)
+    def task_transfer_loss(self, attr_test,  x, y):
+        w_pred = self.task_transfer(attr_test, self.a_kb_opt)
+        o_loss = torch.tensor(0.0, requires_grad=True, dtype=float).to(self.device)
         batch_size = w_pred.size()[1]
         #print(w_pred.size(), x.size())
         for t in range(batch_size):
@@ -243,48 +253,46 @@ class ZSTL:
         o_loss = self.loss(pred_y, y_loss)
         return o_loss
 
-    def task_transfer_bi_acc(self, attr_test, attr_kb, x, y):
-        w_pred = self.task_transfer(attr_test, attr_kb)
+    def task_transfer_bi_acc(self, attr_test, x, y):
+        w_pred = self.task_transfer(attr_test, self.a_kb_opt)
         #print(w_pred.size(), x.size())
         #pred = getPred(x, w_pred, self.model, self.model_shape)
-        acc = torch.tensor(0.0, requires_grad=False, dtype=float) #new var
-        num_data = torch.tensor(y[0,:].size()[0], dtype=float)
-        num_task = torch.tensor(y.size()[0], dtype=float)
+        acc = torch.tensor(0.0, requires_grad=False, dtype=float).to(self.device) #new var
+        num_data = torch.tensor(y[0,:].size()[0], dtype=float).to(self.device)
+        num_task = torch.tensor(y.size()[0], dtype=float).to(self.device)
         for t in range(x.size()[0]):
             cur_w = w_pred[:, t].unsqueeze(0).float()
             pred = self.getPred(x[t,:].float(), cur_w, self.model, self.model_shape)
-            pred[pred>=0.5] = torch.ones_like(pred[pred>=0.5])
-            pred[pred<0.5] = torch.zeros_like(pred[pred<0.5])
+            pred[pred>=0.5] = torch.ones_like(pred[pred>=0.5], device=self.device)
+            pred[pred<0.5] = torch.zeros_like(pred[pred<0.5], device=self.device)
             acc += torch.sum(pred == y[t,:])/num_data
             
         mean_acc = acc/num_task
         
         return mean_acc
 
-    def task_transfer(self, attr_test, attr_kb):
-        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, attr_kb, self.hp[0])
+    def task_transfer(self, attr_test):
+        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, self.a_kb_opt)
         return w_pred
 
-    
-
-    def analytical_soln_atten(self, w_kbb, e_item, e_kbb, w_atten):
+    def analytical_soln_atten(self, w_kbb, e_item, e_kbb):
         #find analytical son for one specific novel task
         '''
         c - row vector 
         w_kbb 
         '''
-        affinity = self.build_c_byAtten(e_item, e_kbb, w_atten)
+        affinity = self.Dot_Attention(e_item, e_kbb)
         #print('affinity ',affinity.size())
-        softmax = Sparsemax(dim=1)
-        c_newnew = softmax(affinity) 
+        
+        c_newnew = self.atten_activation(affinity) 
         #print('check softmax sum ', torch.sum(c_newnew, dim=1, keepdim=True))
         w = torch.matmul(c_newnew, w_kbb.t())
         return w.t()
 
-    def build_c_byAtten(self, e_item, e_kbb, w_atten):
-        dim = e_item.size()[0]
+    def Dot_Attention(self, e_item, e_kbb, w_atten):
+        #dim = e_item.size()[0]
         #print('dim ', dim)
-        affinity = torch.matmul(e_item.t(), w_atten)
+        affinity = torch.matmul(e_item.t(), self.hp[0])
         affinity = torch.matmul(affinity, e_kbb)
 
         return affinity
@@ -308,8 +316,8 @@ class ZSTL:
             cur_x = x[t,:].float()
             cur_w = weight[:,t].unsqueeze(0).float()
             pred_y = self.getPred(cur_x, cur_w, model, model_shape)
-            pred_y[pred_y>=0.5] = torch.ones_like(pred_y[pred_y>=0.5])
-            pred_y[pred_y<0.5] = torch.zeros_like(pred_y[pred_y<0.5])
+            pred_y[pred_y>=0.5] = torch.ones_like(pred_y[pred_y>=0.5], device=self.device)
+            pred_y[pred_y<0.5] = torch.zeros_like(pred_y[pred_y<0.5], device=self.device)
             pred_y_batch.append(pred_y.t())
 
         pred_y_batch = torch.cat(pred_y_batch, dim=0)

@@ -48,7 +48,8 @@ class ZSTL:
         self.mu = param_dict['mu']
 
         # indx 1: w_r; indx 2: w_kb
-        self.hp = [torch.eye(self.dm, requires_grad=True), self.w_kb.clone().detach().requires_grad_(True)]
+        self.hp = [torch.eye(self.dm, requires_grad=True),  self.w_kb.clone().detach().requires_grad_(True)]
+        self.w_r = torch.eye(self.dm, requires_grad=False)
         #self.hp = [torch.eye(self.dm, requires_grad=True)]
         self.a_kb_opt = a_kb.clone().detach().requires_grad_(False)
         self.outer_opt = torch.optim.Adam(self.hp, lr=param_dict['outer lr'])
@@ -61,7 +62,7 @@ class ZSTL:
 
         if param_dict['loss'] == 'mse':
             self.loss = nn.MSELoss()
-            self.metric = self.task_transfer_loss
+            self.metric = self.task_transfer_loss_batch
             self.getPred = getPred_regress
             self.getPred_batch = self.getPred_batch_regress
         elif param_dict['loss'] == 'binary class':
@@ -92,34 +93,41 @@ class ZSTL:
                 test_a, self.a_kb_opt)
         print('init mean test metric {}; align loss {}'.format(test_loss_batch, align_loss))
 
+        train_batch = next(iter(train_loader))
+        train_a, train_w, train_x, train_y = train_batch[0].float(), train_batch[1].float(), train_batch[2].float(), train_batch[3].float()
+        # train_a = train_a.squeeze().t()
+        # train_w = train_w.squeeze().t()
+
+
         train_l_lst = []
         test_l_lst = []
-        for i in range(max_iter):
-            train_batch = next(iter(train_loader))
-            train_a, train_w, train_x, train_y = train_batch[0].float(), train_batch[1].float(), train_batch[2].float(), train_batch[3].float()
-            #print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
-            train_a = train_a.squeeze().t()
-            train_w = train_w.squeeze().t()
-            # print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
-            # a = ppp
+        print('num task ', train_x.size()[0])
+        for t in range(train_x.size()[0]):
+            for j in range(1000):
+                o_loss = self.min_outer_obj_online(train_a[t, :].t(), train_x[t,:], train_y[t,:])
 
-            train_loss_batch = self.task_transfer_loss(train_a, self.a_kb_opt, train_x, train_y)
-            o_loss = train_loss_batch + self.rho*torch.pow(torch.norm(self.hp[1]), 2)
-            train_l_lst.append(utils.toNumpy(o_loss.clone().detach().requires_grad_(False)))
-            self.outer_opt.zero_grad()
-            o_loss.backward()
-            self.outer_opt.step()
+                # test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
+                # test_l_lst.append(utils.toNumpy(test_loss_batch.clone().detach().requires_grad_(False)))
+                # mse_loss = self.align_loss(train_w[t,:].t(), self.hp[1].clone().detach().requires_grad_(False), \
+                # train_a[t,:].t(), self.a_kb_opt)
+                # #train_metric_batch = self.metric(train_a[t,:].t(), self.a_kb_opt, train_x[t,:], train_y)
+                # # print(t+1)
+                # # print()
+                # print('{}/{} o_loss {}; m test metric {}; align loss  {}'.\
+                #     format(j+1, 100, o_loss,  test_loss_batch, mse_loss))
 
-            self.a_kb_opt, mse_loss = self.attention_alignment(train_w, self.hp[1].clone().detach().requires_grad_(False), \
-                train_a, self.a_kb_opt, train_x)
+            self.a_kb_opt, mse_loss = self.attention_alignment(train_w[t,:].t(), self.hp[1].clone().detach().requires_grad_(False), \
+                train_a[t,:].t(), self.a_kb_opt, train_x[t,:])
 
-            if (i+1) % 10 == 0 or i == 0:
+            if (t+1) % 1 == 0 or t == 0:
                 test_loss_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
                 test_l_lst.append(utils.toNumpy(test_loss_batch.clone().detach().requires_grad_(False)))
-                train_metric_batch = self.metric(train_a, self.a_kb_opt, train_x, train_y)
-                print('{}/{} o_loss {}; m train metric {}; m test metric {}; align loss  {}'.\
-                    format(i+1, max_iter, o_loss, train_metric_batch, test_loss_batch, mse_loss))
-
+                #train_metric_batch = self.metric(train_a[t,:].t(), self.a_kb_opt, train_x[t,:], train_y)
+                # print(t+1)
+                # print()
+                print('{}/{} o_loss {}; m test metric {}; align loss  {}'.\
+                    format(t+1, train_x.size()[0], o_loss,  test_loss_batch, mse_loss))
+            #a = pppp
         print('lr ', self.param_dict['outer lr'])
         plt.plot(train_l_lst, label='Traning: Outer Objectives')
         
@@ -134,6 +142,16 @@ class ZSTL:
         plt.show()
 
         return 0
+
+    def min_outer_obj_online(self, a, x, y):
+        train_loss = self.task_transfer_loss(a, self.a_kb_opt, x, y)
+        o_loss = train_loss + self.rho*torch.pow(torch.norm(self.hp[1]), 2)
+        #train_l_lst.append(utils.toNumpy(o_loss.clone().detach().requires_grad_(False)))
+        #print('train_l_lst ', train_l_lst, ' o_loss ', o_loss)
+        self.outer_opt.zero_grad()
+        o_loss.backward()
+        self.outer_opt.step()
+        return o_loss.clone().detach()
 
     def align_loss(self,weight_train, weight_kb, attr_train, attr_kb):
         cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float)))
@@ -162,10 +180,9 @@ class ZSTL:
         cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float)))
         cal_atten = lambda a : a/torch.sum(a, dim=1, keepdim=True)
         
-        attr_kb_opt = [attr_kb.clone().detach().requires_grad_(True)] #new var
+        attr_kb_opt = [attr_kb.clone().detach().requires_grad_(True)]
         opt = torch.optim.Adam(attr_kb_opt, lr=self.param_dict['align lr'])
         tolerance = torch.tensor(1e-4, dtype=torch.float32, requires_grad=False)
-        
 
         totIter = 200
 
@@ -177,12 +194,6 @@ class ZSTL:
         affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
         y_train_kb_atten = cal_atten(affinity_y_train_kb)
 
-        # y_kb_pred = self.getPred_batch(x_loss,  weight_kb, self.model, self.model_shape)
-        # affinity_y_kb = cal_affinity(y_kb_pred, y_kb_pred.t())
-        # y_kb_atten = cal_atten(affinity_y_kb)
-        # y_train_pred = self.getPred_batch(x_loss,  weight_train, self.model, self.model_shape)
-        # affinity_y_train_kb = cal_affinity(y_train_pred, y_kb_pred.t())
-        # y_train_kb_atten = cal_atten(affinity_y_train_kb)
         prev_obj = torch.tensor(0., dtype=torch.float32, requires_grad=False)
         affinity_attr_kb = cal_affinity(attr_kb_opt[0].t(), attr_kb_opt[0])
         attr_kb_atten = cal_atten(affinity_attr_kb)
@@ -209,22 +220,24 @@ class ZSTL:
             mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
             mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
             mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
-            if mse_loss_kb + mse_loss_train_kb <= tolerance:
-                break
+            
             
         #print('{}/{}: mse loss is {}'.format(t, totIter, mse_loss))
         return attr_kb_opt[0].clone().detach().requires_grad_(False), mse_loss
 
-    def zero_shot_transfer(self, test_loader):
-        test_batch = next(iter(test_loader))
-        test_a, test_w, test_x, test_y = test_batch[0].float(), test_batch[1].float(), test_batch[2].float(), test_batch[3].float()
-        test_a = test_a.squeeze().t()
-        test_w = test_w.squeeze().t()
-
-        test_metric_batch = self.metric(test_a, self.a_kb_opt, test_x, test_y)
-        return test_metric_batch
-
     def task_transfer_loss(self, attr_test, attr_kb, x, y):
+        w_pred = self.task_transfer(attr_test, attr_kb)
+        o_loss = torch.tensor(0.0, requires_grad=True, dtype=float)
+        batch_size = w_pred.size()[1]
+        #print(w_pred.size(), x.size())
+        #for t in range(batch_size):
+        cur_x = x.float()
+        cur_w = w_pred[:,0].unsqueeze(0).float()
+        cur_y = y.float()
+        o_loss = o_loss + self.outer_loss(cur_w, cur_x, cur_y)
+        return o_loss/batch_size
+
+    def task_transfer_loss_batch(self, attr_test, attr_kb, x, y):
         w_pred = self.task_transfer(attr_test, attr_kb)
         o_loss = torch.tensor(0.0, requires_grad=True, dtype=float)
         batch_size = w_pred.size()[1]
@@ -247,7 +260,7 @@ class ZSTL:
         w_pred = self.task_transfer(attr_test, attr_kb)
         #print(w_pred.size(), x.size())
         #pred = getPred(x, w_pred, self.model, self.model_shape)
-        acc = torch.tensor(0.0, requires_grad=False, dtype=float) #new var
+        acc = torch.tensor(0.0, requires_grad=False, dtype=float)
         num_data = torch.tensor(y[0,:].size()[0], dtype=float)
         num_task = torch.tensor(y.size()[0], dtype=float)
         for t in range(x.size()[0]):
@@ -262,7 +275,7 @@ class ZSTL:
         return mean_acc
 
     def task_transfer(self, attr_test, attr_kb):
-        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, attr_kb, self.hp[0])
+        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, attr_kb, self.w_r)
         return w_pred
 
     
