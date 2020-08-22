@@ -60,7 +60,7 @@ class Dataset(torch.utils.data.Dataset):
         'Denotes the total number of samples'
         return len(self.dataset)
 
-  def __getitem__(self, index):
+  def __getitem__(self, index, sampling=False, sampling_size=10):
         'Generates one sample of data'
         # Select sample
         item = self.dataset[index]
@@ -72,9 +72,9 @@ class Dataset(torch.utils.data.Dataset):
         w = item[1]
         w = self.vectorize(w)
         w = np.expand_dims(w, axis=0)
-
-        x = np.array(item[2])
-        y = np.array(item[3])
+        if not sampling:
+          x = np.array(item[2])
+          y = np.array(item[3])
 
         return a, w, x, y
 
@@ -95,37 +95,17 @@ class Dataset(torch.utils.data.Dataset):
 
 class Dataset_hetrec(torch.utils.data.Dataset):
   'Characterizes a dataset for PyTorch'
-  def __init__(self, compressed_data, detailed_data):
+  def __init__(self, compressed_data, detailed_data, phase='Normal'):
         'Initialization'
         self.compressed_data = compressed_data
         self.x = detailed_data['x']
         self.y = detailed_data['y']
         self.a = detailed_data['a']
+        self.pahse = phase
 
   def __len__(self):
         'Denotes the total number of samples'
         return len(self.compressed_data)
-
-  def __getitem__(self, index):
-        'Generates one sample of data'
-        # Select sample
-        item = self.compressed_data[index]
-        data_indx = item[0]
-        # Load data and get label
-        a = np.array(self.a[data_indx, :])
-        a = np.expand_dims(a, axis=0)
-      
-        w = item[1]
-        w = self.vectorize(w)
-        w = np.expand_dims(w, axis=0)
-
-        selected_data = item[2]
-        x = [np.expand_dims(self.x[i,:], axis=0) for i in selected_data]
-        x = np.concatenate(x, axis=0)
-        cur_y = self.y[data_indx, :]
-        y = np.expand_dims(cur_y[selected_data], axis=0).T
-
-        return a, w, x, y
 
   def vectorize(self, weights):
         #weights with original model parameter shape
@@ -140,6 +120,30 @@ class Dataset_hetrec(torch.utils.data.Dataset):
                 flatted_param = flatted_param + list(flatted)
         
         return flatted_param
+
+  def __getitem__(self, index):
+        'Generates one sample of data'
+        # Select sample
+        item = self.compressed_data[index]
+        data_indx = item[0]
+        # Load data and get label
+        a = np.array(self.a[data_indx, :])
+        a = np.expand_dims(a, axis=0)
+      
+        w = item[1]
+        w = self.vectorize(w)
+        w = np.expand_dims(w, axis=0)
+
+        if self.pahse == 'Normal':
+            selected_data = item[2]
+            x = [np.expand_dims(self.x[i,:], axis=0) for i in selected_data]
+            x = np.concatenate(x, axis=0)
+            cur_y = self.y[data_indx, :]
+            y = np.expand_dims(cur_y[selected_data], axis=0).T
+            return a, w, x, y
+        elif self.pahse == 'mAP':
+            y = np.expand_dims(self.y[data_indx, :], axis=2)
+            return a, w, y
 
 def genSplits_hectrec(compressed_data, detailed_data, train_size, test_size, support_size, train_batch_size=100):
 
@@ -204,7 +208,108 @@ def sigmoid(theta):
   theta[theta < -100] = -100
   return 1/(1+np.exp(-theta))
 
-def hp_select_binClass(train_loader, val_loader, support_loader, d, dm,  model, model_shape, device):
+def hp_select_binClass(train_loader, val_loader, support_loader, d, dm,  model, model_shape, device, val_step=1500):
+    train_a, train_w, train_x, train_y = next(iter(train_loader))
+    train_a, train_w, train_x, train_y = train_a.float(), train_w.float(), train_x.float(), train_y.float()
+    print(train_a.size()[0])
+    val_a, val_w, val_x, val_y = next(iter(val_loader))
+    val_a, val_w, val_x, val_y = val_a.float(), val_w.float(), val_x.float(), val_y.float()
+    print(val_a.size()[0])
+
+    support_a, support_w, support_x, support_y = next(iter(support_loader))
+    support_a, support_w, support_x, support_y = support_a.float(), support_w.float(), support_x.float(), support_y.float()
+    support_a = support_a.squeeze().t()
+    support_w = support_w.squeeze().t()
+
+    best_hp = {}
+    best_metric = 0.0
+    regu_param_rho = [ 10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
+    regu_param_mu = [10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
+    #dict_k_model = [5 , 6, 7, 8, 9, 10]
+    param_dict = {}
+    param_dict['rho'] = 0.0001
+    param_dict['mu'] = 0.001
+    param_dict['loss'] = 'binary class'
+    param_dict['outer lr'] = 1e-3
+    param_dict['align lr'] = 1e-4
+    param_dict['dm'] = dm
+    param_dict['d'] = d
+    param_dict['model_shape'] = model_shape
+    param_dict['atten_activation'] = 'Sparsemax'
+
+    hp_lst = list(itertools.product(regu_param_rho, regu_param_mu))
+    print('num of hp ', len(hp_lst))
+    for hp in hp_lst:
+        param_dict['rho'] = hp[0]
+        param_dict['mu'] = hp[1]
+        print('rho for w_kb {}; mu for a_kb {};'.format(param_dict['rho'], param_dict['mu']))
+        
+        ZSTL_model = ZSTL(support_w, support_a, support_x, model, param_dict, device)
+        ZSTL_model.train(train_loader, val_loader, max_iter=val_step)
+
+        mean_metric = ZSTL_model.zero_shot_transfer(val_loader)
+        print('mean metric {}'.format(mean_metric))
+        if mean_metric >= best_metric:
+            print('New best acc {}'.format(mean_metric))
+            best_metric = mean_metric
+            best_hp['mu'] = float(param_dict['mu'])
+            best_hp['rho'] = float(param_dict['rho'])
+            #best_hp = param_dict
+
+    return best_hp
+
+def hp_select_regression(train_loader, val_loader, support_loader, d, dm,  model, model_shape, device, val_step=1500):
+    train_a, train_w, train_x, train_y = next(iter(train_loader))
+    train_a, train_w, train_x, train_y = train_a.float(), train_w.float(), train_x.float(), train_y.float()
+    print(train_a.size()[0])
+    val_a, val_w, val_x, val_y = next(iter(val_loader))
+    val_a, val_w, val_x, val_y = val_a.float(), val_w.float(), val_x.float(), val_y.float()
+    print(val_a.size()[0])
+
+    support_a, support_w, support_x, support_y = next(iter(support_loader))
+    support_a, support_w, support_x, support_y = support_a.float(), support_w.float(), support_x.float(), support_y.float()
+    support_a = support_a.squeeze().t()
+    support_w = support_w.squeeze().t()
+
+    best_hp = {}
+    best_metric = float('inf')
+    regu_param_rho = [ 10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
+    regu_param_mu = [10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
+    #dict_k_model = [5 , 6, 7, 8, 9, 10]
+    param_dict = {}
+    # param_dict['rho'] = 0.0001
+    # param_dict['mu'] = 0.001
+    param_dict['loss'] = 'mse'
+    param_dict['outer lr'] = 1e-3
+    param_dict['align lr'] = 1e-4
+    param_dict['dm'] = dm
+    param_dict['d'] = d
+    param_dict['model_shape'] = model_shape
+    param_dict['atten_activation'] = 'Sparsemax'
+
+    hp_lst = list(itertools.product(regu_param_rho, regu_param_mu))
+    print('num of hp ', len(hp_lst))
+    for hp in hp_lst:
+        param_dict['rho'] = hp[0]
+        param_dict['mu'] = hp[1]
+        print('rho for w_kb {}; mu for a_kb {};'.format(param_dict['rho'], param_dict['mu']))
+        
+        ZSTL_model = ZSTL(support_w, support_a, support_x, model, param_dict, device)
+        ZSTL_model.train(train_loader, val_loader, max_iter=val_step)
+
+        mean_metric = ZSTL_model.zero_shot_transfer(val_loader)
+        print('mean metric {}'.format(mean_metric))
+        if mean_metric <= best_metric:
+            print('New best acc {}'.format(mean_metric))
+            best_metric = mean_metric
+            best_hp['mu'] = float(param_dict['mu'])
+            best_hp['rho'] = float(param_dict['rho'])
+            #best_hp = param_dict
+
+    return best_hp
+
+
+def hp_select_mAP(train_loader, val_loader, support_loader, d, dm,  model, model_shape, device):
     train_a, train_w, train_x, train_y = next(iter(train_loader))
     train_a, train_w, train_x, train_y = train_a.float(), train_w.float(), train_x.float(), train_y.float()
     print(train_a.size()[0])
@@ -246,56 +351,6 @@ def hp_select_binClass(train_loader, val_loader, support_loader, d, dm,  model, 
         mean_metric = ZSTL_model.zero_shot_transfer(val_loader)
         print('mean metric {}'.format(mean_metric))
         if mean_metric >= best_metric:
-            print('New best acc {}'.format(mean_metric))
-            best_metric = mean_metric
-            best_hp['mu'] = float(param_dict['mu'])
-            best_hp['rho'] = float(param_dict['rho'])
-            #best_hp = param_dict
-
-    return best_hp
-
-def hp_select_regression(train_loader, val_loader, support_loader, d, dm,  model, model_shape, device):
-    train_a, train_w, train_x, train_y = next(iter(train_loader))
-    train_a, train_w, train_x, train_y = train_a.float(), train_w.float(), train_x.float(), train_y.float()
-    print(train_a.size()[0])
-    val_a, val_w, val_x, val_y = next(iter(val_loader))
-    val_a, val_w, val_x, val_y = val_a.float(), val_w.float(), val_x.float(), val_y.float()
-    print(val_a.size()[0])
-
-    support_a, support_w, support_x, support_y = next(iter(support_loader))
-    support_a, support_w, support_x, support_y = support_a.float(), support_w.float(), support_x.float(), support_y.float()
-    support_a = support_a.squeeze().t()
-    support_w = support_w.squeeze().t()
-
-    best_hp = {}
-    best_metric = float('inf')
-    regu_param_rho = [ 10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
-    regu_param_mu = [10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
-    #dict_k_model = [5 , 6, 7, 8, 9, 10]
-    param_dict = {}
-    # param_dict['rho'] = 0.0001
-    # param_dict['mu'] = 0.001
-    param_dict['loss'] = 'mse'
-    param_dict['outer lr'] = 1e-3
-    param_dict['align lr'] = 1e-4
-    param_dict['dm'] = dm
-    param_dict['d'] = d
-    param_dict['model_shape'] = model_shape
-    param_dict['atten_activation'] = 'Sparsemax'
-
-    hp_lst = list(itertools.product(regu_param_rho, regu_param_mu))
-    print('num of hp ', len(hp_lst))
-    for hp in hp_lst:
-        param_dict['rho'] = hp[0]
-        param_dict['mu'] = hp[1]
-        print('rho for w_kb {}; mu for a_kb {};'.format(param_dict['rho'], param_dict['mu']))
-        
-        ZSTL_model = ZSTL(support_w, support_a, support_x, model, param_dict, device)
-        ZSTL_model.train(train_loader, val_loader, max_iter=1500)
-
-        mean_metric = ZSTL_model.zero_shot_transfer(val_loader)
-        print('mean metric {}'.format(mean_metric))
-        if mean_metric <= best_metric:
             print('New best acc {}'.format(mean_metric))
             best_metric = mean_metric
             best_hp['mu'] = float(param_dict['mu'])
