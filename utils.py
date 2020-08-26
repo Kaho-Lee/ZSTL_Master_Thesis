@@ -358,3 +358,57 @@ def hp_select_mAP(train_loader, val_loader, support_loader, d, dm,  model, model
             #best_hp = param_dict
 
     return best_hp
+
+def cal_AvgPrecision_k(pred_y, y, k=5):
+    relavance = torch.tensor(0.0, requires_grad=False, dtype=float) #new var
+    count = torch.tensor(0.0, requires_grad=False, dtype=float) #new var
+    num_data = torch.tensor(y[0,:].size()[0], dtype=float)
+    precision = torch.tensor(0.0, requires_grad=False, dtype=float)
+    #pos_label = torch.tensor(1.0, )
+
+    #print('pred_y ', pred_y.shape)
+    #print('y ', y.shape)
+    
+    pred_y_sorted_indx = torch.squeeze(torch.argsort(pred_y, dim=0, descending=True))
+    #print('pred_y_sorted_indx ', pred_y_sorted_indx)
+    pred_y_sorted = pred_y[pred_y_sorted_indx]
+    #print('pred_y_sorted ', pred_y_sorted.shape, pred_y_sorted)
+    y_sorted = y[pred_y_sorted_indx]
+    #print('y_sorted ', y_sorted)
+
+    for i in range(k):
+        # if  pred_y_sorted[i] >= 0.5:
+          count += 1
+          if y_sorted[i] == 1 :
+              relavance += 1
+              precision += relavance/count
+    
+    if relavance == 0:
+        return precision
+    else:
+        precision_atK = precision/relavance
+        #print('precision_atK ', precision_atK)
+        return precision_atK
+
+
+def ZSTL_AvgPrecision(attr_test, x, y, ZSTL_model):
+    attr_test = attr_test.to(ZSTL_model.device)
+    #attr_test = attr_test.to(ZSTL_model.device)
+    w_pred = ZSTL_model.task_transfer(attr_test)
+    #print(w_pred.size(), x.size())
+    #pred = getPred(x, w_pred, self.model, self.model_shape)
+    precision_atK = torch.tensor(0.0, requires_grad=False, dtype=float)
+    x = x.to(ZSTL_model.device)
+    num_task = torch.tensor(y.size()[0], dtype=float)
+    for t in range(y.size()[0]):
+        cur_w = w_pred[:, t].unsqueeze(0).float()
+        pred = ZSTL_model.getPred(x.float(), cur_w, ZSTL_model.model, ZSTL_model.model_shape).cpu()
+        #print(y[t,:].shape)
+        precision_atK += cal_AvgPrecision_k(pred, y[t,:], k=100)
+        #a = ppp
+    mAP = precision_atK/num_task
+    print('mAP at 100 ', mAP, 'num task ', num_task)
+    
+    del x, w_pred, attr_test, cur_w, ZSTL_model
+    torch.cuda.empty_cache()
+    return mAP
