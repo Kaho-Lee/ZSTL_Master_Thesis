@@ -19,28 +19,33 @@ from argparse import ArgumentParser
 def getPred_regress(x_loss, w_pred, model, model_shape):
   reshaped_w = utils.reshape_w(w_pred, model_shape)    
   pred_y = model(reshaped_w, x_loss)
+  del x_loss, w_pred
   return pred_y
 
 def getPred_binClass(x_loss, w_pred, model, model_shape):
   reshaped_w = utils.reshape_w(w_pred, model_shape)    
   pred = model(reshaped_w, x_loss)
   pred = torch.sigmoid(pred)
-  
+  del x_loss, w_pred
   return pred
 
-
+#cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float).to(self.device)))
+# def cal_affinity(a, b, device):
+#     thres = torch.tensor(50., dtype=float32).to(device)
+#     aff = torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float).to(device))
+#     if aff > thres:
+#         return torch.exp()
 
 class ZSTL:
-    def __init__(self, w_kb, a_kb, x_kb, base_model, param_dict, device):
+    def __init__(self, w_kb, a_kb, base_model, param_dict, device):
         self.param_dict = param_dict
 
         #pre-set to gpu
         self.device = device
         self.w_kb = w_kb.to(self.device) 
         self.a_kb = a_kb.to(self.device)
-        self.x_kb = x_kb.to(self.device)
         self.model = base_model
-        
+        self.param_dict = param_dict
 
         self.model_shape = param_dict['model_shape']
         self.d = param_dict['d']
@@ -52,13 +57,7 @@ class ZSTL:
         self.rho = torch.tensor(param_dict['rho']).to(self.device)
         self.mu = torch.tensor(param_dict['mu']).to(self.device)
 
-        # indx 1: w_r; indx 2: w_kb (need mannual set to gpu )
-        self.hp = [torch.eye(self.dm, requires_grad=True,device=self.device), \
-            self.w_kb.clone().detach().requires_grad_(True).to(self.device)]
-        #self.hp = [torch.eye(self.dm, requires_grad=True)]
-        self.a_kb_opt = a_kb.clone().detach().requires_grad_(False).to(self.device)
-        self.outer_opt = torch.optim.Adam(self.hp, lr=param_dict['outer lr'])
-
+        self.init()
         #for alignment loss
         self.tolerance = torch.tensor(1e-4, dtype=torch.float32, requires_grad=False).to(self.device)
 
@@ -80,6 +79,31 @@ class ZSTL:
             self.getPred = getPred_binClass
             self.getPred_batch = self.getPred_batch_class
 
+    def init_bias(self, w_kb):
+        #print('init w_kb ', w_kb.shape)
+        w_kb_mean = torch.sum(w_kb, dim=1, keepdim=True)
+        #print('w_kb_mean ', w_kb_mean.shape, w_kb_mean)
+        w_kb_sub = w_kb - w_kb_mean
+
+        #print('w_kb_sub ', w_kb_sub.shape,  w_kb_sub)
+        return w_kb_sub, w_kb_mean
+    def init(self,):
+        # indx 1: w_r; indx 2: w_kb (need mannual set to gpu )
+        w_kb_sub, w_kb_mean = self.init_bias( self.w_kb)
+
+        self.w_r = 0.001*torch.eye(self.dm, requires_grad=True,device=self.device)
+        self.hp = [self.w_r.clone().detach().requires_grad_(True).to(self.device), \
+            w_kb_sub.clone().detach().requires_grad_(True).to(self.device), \
+                w_kb_mean.clone().detach().requires_grad_(True).to(self.device)]
+        #self.hp = [torch.eye(self.dm, requires_grad=True)]
+        self.a_kb_opt = [self.a_kb.clone().detach().requires_grad_(True).to(self.device)]
+        self.outer_opt = torch.optim.Adam(self.hp, lr=self.param_dict['outer lr'])
+        self.align_opt = torch.optim.Adam(self.a_kb_opt, lr=self.param_dict['align lr'])
+
+        del w_kb_sub, w_kb_mean
+        torch.cuda.empty_cache()
+
+
     def sigmoid_loss(self, pred, target):
         #op only
         try:
@@ -88,6 +112,9 @@ class ZSTL:
             print('a_kb ', self.a_kb_opt)
             print('w_kb ', self.hp[1])
             print('logit ', pred)
+
+        del pred, target
+        torch.cuda.empty_cache()
         return loss
 
     def train(self, train_loader, test_loader, max_iter = 1000):
@@ -97,7 +124,8 @@ class ZSTL:
             test_batch[2].float().to(self.device), test_batch[3].float().to(self.device)
         test_a = test_a.squeeze().t()
         test_w = test_w.squeeze().t()
-
+        print('test ',test_a.shape, test_w.shape, test_x.shape, test_y.shape)
+        print('weight_kb ', self.hp[1].shape)
         test_loss_batch = self.metric(test_a,  test_x, test_y)
         align_loss = self.align_loss(test_w, self.hp[1].clone().detach().requires_grad_(False), \
                 test_a)
@@ -113,25 +141,32 @@ class ZSTL:
             #print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
             train_a = train_a.squeeze().t()
             train_w = train_w.squeeze().t()
-            # print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
+            # print('train ',train_a.shape, train_w.shape, train_x.shape, train_y.shape)
             # a = ppp
-
-            train_loss_batch = self.task_transfer_loss(train_a, train_x, train_y)
-            o_loss = train_loss_batch + self.rho*torch.pow(torch.norm(self.hp[1]), 2)
-            train_l_lst.append(utils.toNumpy(o_loss.cpu().clone().detach().requires_grad_(False)))
             self.outer_opt.zero_grad()
+            train_loss_batch = self.task_transfer_loss(train_a, train_x, train_y)
+            o_loss = train_loss_batch + self.rho*torch.pow(torch.norm(self.hp[1]), 2) +\
+                self.rho*torch.pow(torch.norm(self.hp[2]), 2)
+            train_l_lst.append(utils.toNumpy(o_loss.cpu().clone().detach().requires_grad_(False)))
             o_loss.backward()
             self.outer_opt.step()
 
-            self.a_kb_opt, mse_loss = self.attention_alignment(train_w, self.hp[1].clone().detach().requires_grad_(False), \
-                train_a, train_x)
+            self.align_opt.zero_grad()
+            align_loss = self.align_loss(train_w, self.hp[1].clone().detach().requires_grad_(False), \
+                train_a)
+            #print('align loss ', align_loss)
+            align_loss.backward()
+            self.align_opt.step()
 
-            if (i+1) % 100 == 0 or i == 0:
+            if (i+1) % 20 == 0 or i == 0:
                 test_loss_batch = self.metric(test_a, test_x, test_y)
                 test_l_lst.append(utils.toNumpy(test_loss_batch.cpu().clone().detach().requires_grad_(False)))
                 train_metric_batch = self.metric(train_a,  train_x, train_y)
                 print('{}/{} o_loss {}; m train metric {}; m test metric {}; align loss  {}'.\
-                    format(i+1, max_iter, o_loss, train_metric_batch, test_loss_batch, mse_loss))
+                    format(i+1, max_iter, o_loss, train_metric_batch, test_loss_batch, align_loss\
+                        -self.mu*torch.pow(torch.norm(self.a_kb_opt[0]), 2)))
+
+                torch.cuda.empty_cache()
 
         print('lr ', self.param_dict['outer lr'])
         plt.plot(train_l_lst, label='Traning: Outer Objectives')
@@ -146,84 +181,36 @@ class ZSTL:
         plt.legend()
         plt.show()
 
+        del test_a, test_w, test_x, test_y
+        del train_a, train_w, train_x, train_y
+        del align_loss
+        torch.cuda.empty_cache()
         return 0
 
     def align_loss(self,weight_train, weight_kb, attr_train):
         cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float).to(self.device)))
         cal_atten = lambda a : a/torch.sum(a, dim=1, keepdim=True)
 
+        #print('weight_kb ', weight_kb.shape)
         affinity_y_kb = cal_affinity(weight_kb.t(), weight_kb)
         y_kb_atten = cal_atten(affinity_y_kb)
 
-        affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
+        w_pred = self.analytical_soln_atten(self.hp[1], attr_train, self.a_kb_opt[0]).\
+            clone().detach().requires_grad_(False)
+        affinity_y_train_kb = cal_affinity(w_pred.t(), weight_kb)
         y_train_kb_atten = cal_atten(affinity_y_train_kb)
 
-        affinity_attr_kb = cal_affinity(self.a_kb_opt.t(), self.a_kb_opt)
+        affinity_attr_kb = cal_affinity(self.a_kb_opt[0].t(), self.a_kb_opt[0])
         attr_kb_atten = cal_atten(affinity_attr_kb)
-        affinity_attr_train_kb = cal_affinity(attr_train.t(), self.a_kb_opt)
+        affinity_attr_train_kb = cal_affinity(attr_train.t(), self.a_kb_opt[0])
         attr_train_kb_atten = cal_atten(affinity_attr_train_kb)
         mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
         mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
-        mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(self.a_kb_opt), 2)
+        mse_loss = mse_loss_kb.item() + mse_loss_train_kb.item() + self.mu*torch.pow(torch.norm(self.a_kb_opt[0]), 2)
 
-        return mse_loss.clone().detach().requires_grad_(False)
-
-
-
-    def attention_alignment(self, weight_train, weight_kb, attr_train, x_loss):
-        cal_affinity = lambda a, b: torch.exp(torch.matmul(a, b)/torch.sqrt(torch.tensor(b.size()[0], dtype=float)))
-        cal_atten = lambda a : a/torch.sum(a, dim=1, keepdim=True)
-        
-        attr_kb_opt = [self.a_kb_opt.clone().detach().requires_grad_(True)] #new var, pay attention
-        opt = torch.optim.Adam(attr_kb_opt, lr=self.param_dict['align lr'])
-        
-        totIter = 200
-
-        #print('weight_train ', weight_train.shape, 'weight_kb ', weight_kb.shape)
-        affinity_y_kb = cal_affinity(weight_kb.t(), weight_kb)
-        y_kb_atten = cal_atten(affinity_y_kb)
-
-        #w_pred = self.analytical_soln_atten(weight_kb, attr_train, attr_kb, self.hp[0].clone().detach().requires_grad_(False))
-        affinity_y_train_kb = cal_affinity(weight_train.t(), weight_kb)
-        y_train_kb_atten = cal_atten(affinity_y_train_kb)
-
-        # y_kb_pred = self.getPred_batch(x_loss,  weight_kb, self.model, self.model_shape)
-        # affinity_y_kb = cal_affinity(y_kb_pred, y_kb_pred.t())
-        # y_kb_atten = cal_atten(affinity_y_kb)
-        # y_train_pred = self.getPred_batch(x_loss,  weight_train, self.model, self.model_shape)
-        # affinity_y_train_kb = cal_affinity(y_train_pred, y_kb_pred.t())
-        # y_train_kb_atten = cal_atten(affinity_y_train_kb)
-        prev_obj = torch.tensor(0., dtype=torch.float32, requires_grad=False).to(self.device)
-        affinity_attr_kb = cal_affinity(attr_kb_opt[0].t(), attr_kb_opt[0])
-        attr_kb_atten = cal_atten(affinity_attr_kb)
-        affinity_attr_train_kb = cal_affinity(attr_train.t(), attr_kb_opt[0])
-        attr_train_kb_atten = cal_atten(affinity_attr_train_kb)
-        mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
-        mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
-        mse_loss = mse_loss_kb + mse_loss_train_kb + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
-        t = 0
-        while t < totIter and torch.abs(mse_loss - prev_obj) >= self.tolerance*torch.abs(prev_obj):
-            t += 1
-            opt.zero_grad()
-            mse_loss.backward()
-            opt.step()
-            prev_obj = mse_loss.clone().detach().requires_grad_(False)
-
-            affinity_attr_kb = cal_affinity(attr_kb_opt[0].t(), attr_kb_opt[0])
-            attr_kb_atten = cal_atten(affinity_attr_kb)
-
-            affinity_attr_train_kb = cal_affinity(attr_train.t(), attr_kb_opt[0])
-            attr_train_kb_atten = cal_atten(affinity_attr_train_kb)
-
-            
-            # mse_loss_kb =  F.mse_loss(attr_kb_atten, y_kb_atten)
-            # mse_loss_train_kb = F.mse_loss(attr_train_kb_atten, y_train_kb_atten)
-            mse_loss = F.mse_loss(attr_kb_atten, y_kb_atten) + F.mse_loss(attr_train_kb_atten, y_train_kb_atten)\
-                 + self.mu*torch.pow(torch.norm(attr_kb_opt[0]), 2)
-            
-            
-        #print('{}/{}: mse loss is {}'.format(t, totIter, mse_loss))
-        return attr_kb_opt[0].clone().detach().requires_grad_(False), mse_loss
+        del weight_train, attr_train, weight_kb
+        torch.cuda.empty_cache()
+        return mse_loss
 
     def zero_shot_transfer(self, test_loader):
         test_batch = next(iter(test_loader))
@@ -233,6 +220,8 @@ class ZSTL:
         test_w = test_w.squeeze().t()
 
         test_metric_batch = self.metric(test_a, test_x, test_y)
+        del test_a, test_w, test_x, test_y
+        torch.cuda.empty_cache()
         return test_metric_batch
 
     def task_transfer_loss(self, attr_test,  x, y):
@@ -245,6 +234,9 @@ class ZSTL:
             cur_w = w_pred[:,t].unsqueeze(0).float()
             cur_y = y[t,:].float()
             o_loss = o_loss + self.outer_loss(cur_w, cur_x, cur_y)
+
+        del attr_test,  x, y
+        torch.cuda.empty_cache()
         return o_loss/batch_size
 
     def outer_loss(self, w, x_loss, y_loss):
@@ -252,12 +244,14 @@ class ZSTL:
         pred_y = self.getPred(x_loss, w, self.model, self.model_shape)
         
         o_loss = self.loss(pred_y, y_loss)
+
+        del w, x_loss, y_loss
+        torch.cuda.empty_cache()
         return o_loss
 
     def task_transfer_bi_acc(self, attr_test, x, y):
         w_pred = self.task_transfer(attr_test)
         #print(w_pred.size(), x.size())
-        #pred = getPred(x, w_pred, self.model, self.model_shape)
         acc = torch.tensor(0.0, requires_grad=False, dtype=float).to(self.device) #new var
         num_data = torch.tensor(y[0,:].size()[0], dtype=float).to(self.device)
         num_task = torch.tensor(y.size()[0], dtype=float).to(self.device)
@@ -269,11 +263,19 @@ class ZSTL:
             acc += torch.sum(pred == y[t,:])/num_data
             
         mean_acc = acc/num_task
-        
+
+        del num_data, num_task, attr_test, x, y
+        torch.cuda.empty_cache()
         return mean_acc
 
     def task_transfer(self, attr_test):
-        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, self.a_kb_opt)
+        '''
+        get pred task parameter for noval task
+        '''
+        w_pred = self.analytical_soln_atten(self.hp[1], attr_test, self.a_kb_opt[0]) + self.hp[2]
+
+        del attr_test
+        torch.cuda.empty_cache()
         return w_pred
 
     def analytical_soln_atten(self, w_kbb, e_item, e_kbb):
@@ -288,6 +290,9 @@ class ZSTL:
         c_newnew = self.atten_activation(affinity) 
         #print('check softmax sum ', torch.sum(c_newnew, dim=1, keepdim=True))
         w = torch.matmul(c_newnew, w_kbb.t())
+
+        del w_kbb, e_item, e_kbb
+        torch.cuda.empty_cache()
         return w.t()
 
     def Dot_Attention(self, e_item, e_kbb):
@@ -296,6 +301,8 @@ class ZSTL:
         affinity = torch.matmul(e_item.t(), self.hp[0])
         affinity = torch.matmul(affinity, e_kbb)
 
+        del e_item, e_kbb
+        torch.cuda.empty_cache()
         return affinity
 
     def getPred_batch_regress( self,x,  weight, model, model_shape):
@@ -308,6 +315,9 @@ class ZSTL:
             pred_y_batch.append(pred_y.t())
 
         pred_y_batch = torch.cat(pred_y_batch, dim=0)
+
+        del weight, x
+        torch.cuda.empty_cache()
         return pred_y_batch
 
     def getPred_batch_class( self,x,  weight, model, model_shape):
@@ -322,9 +332,7 @@ class ZSTL:
             pred_y_batch.append(pred_y.t())
 
         pred_y_batch = torch.cat(pred_y_batch, dim=0)
+
+        del x,  weight
+        torch.cuda.empty_cache()
         return pred_y_batch
-
-
-
-
-            
