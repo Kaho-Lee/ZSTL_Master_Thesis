@@ -9,10 +9,10 @@ import torch.nn.functional as F
 import pickle
 import itertools
 import tqdm
-from mlmodel import *
-import utils
+from src.mlmodel import *
+from src.sparsemax.sparsemax import Sparsemax
+import src.utils as utils
 import numpy as np
-from sparsemax import Sparsemax
 from argparse import ArgumentParser
 import sklearn
 
