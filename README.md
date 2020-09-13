@@ -19,8 +19,8 @@
 
 - matplotlib.pyplot
 
-- sparsemax \\
-Using the implementation from~\cite{sparsemax_implementation}\\ https://github.com/KrisKorrel/sparsemax-pytorch
+- sparsemax
+Using the implementation from https://github.com/KrisKorrel/sparsemax-pytorch
 
 - mlmodel 
 
