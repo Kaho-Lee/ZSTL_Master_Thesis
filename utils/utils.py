@@ -179,7 +179,7 @@ def hp_select_binClass(train_loader, val_loader, support_loader, d, dm,  model, 
     best_metric = 0.0
     regu_param_rho = [1,  10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
     regu_param_mu = [1, 10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
-    #dict_k_model = [5 , 6, 7, 8, 9, 10]
+
     param_dict = {}
     param_dict['rho'] = 0.0001
     param_dict['mu'] = 0.001
@@ -230,10 +230,10 @@ def hp_select_regression(train_loader, val_loader, support_loader, d, dm,  model
     best_metric = float('inf')
     regu_param_rho = [ 10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
     regu_param_mu = [10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
-    #dict_k_model = [5 , 6, 7, 8, 9, 10]
+
     param_dict = {}
-    # param_dict['rho'] = 0.0001
-    # param_dict['mu'] = 0.001
+    param_dict['rho'] = 0.0001
+    param_dict['mu'] = 0.001
     param_dict['loss'] = 'mse'
     param_dict['outer lr'] = 1e-3
     param_dict['align lr'] = 1e-4
@@ -284,7 +284,7 @@ def hp_select_mAP(train_loader, val_loader, support_loader, val_loader_full, pre
     best_metric = 0.0
     regu_param_rho = [ 10**(-1), 10**(-2), 10**(-3), 10**(-4),  10**(-5)]
     regu_param_mu = [10**(-1), 10**(-2), 10**(-3), 10**(-4), 10**(-5)]
-    #dict_k_model = [5 , 6, 7, 8, 9, 10]
+
     param_dict = {}
     param_dict['rho'] = 0.0001
     param_dict['mu'] = 0.001
@@ -317,9 +317,6 @@ def hp_select_mAP(train_loader, val_loader, support_loader, val_loader_full, pre
             best_hp['mu'] = float(param_dict['mu'])
             best_hp['rho'] = float(param_dict['rho'])
             #best_hp = param_dict
-
-        # del ZSTL_model
-        # torch.cuda.empty_cache()
         
     return best_hp
 
@@ -330,17 +327,10 @@ def cal_AvgPrecision_k(pred_y, y, k=100):
     precision = torch.tensor(0.0, requires_grad=False, dtype=float)
 
     for i in range(k):
-        #if pred_y_sorted[i] >= 0.5:
           count += 1
           if y[i] == 1 :
               relavance += 1
               precision += relavance/count
-
-    # print('my avg precisio ', precision/relavance,'num relavancy ', relavance)
-    # sk_ap =average_precision_score(y.clone().detach(), pred_y.clone().detach())
-    # print('sk_ap ', sk_ap)
-    # print(y, pred_y)
-    # a = ppp
 
     if relavance == 0:
         return precision
@@ -358,13 +348,14 @@ def sortAtk(y, pred_y, k):
   return pred_y_sorted[:k], y_sorted[:k]
 
 
-def precision_recall(y, pred_y):
+def precision(y, pred_y):
   pred_y = toNumpy(torch.sigmoid(pred_y))
   pred_y[pred_y>=0.5] = 1
   pred_y[pred_y<0.5] = 0
 
   precision =  sklearn.metrics.precision_score(pred_y, y, average='micro')
-
+  # print('precision ', precision)
+  # print('y_pred ', y)
   return precision
 
 def getPred_csr(x_loss, w_pred, model, model_shape):
@@ -374,28 +365,43 @@ def getPred_csr(x_loss, w_pred, model, model_shape):
   del x_loss, w_pred
   return pred
 
+def getRecall_k(y, pred_y, k=20):
+  pred_y_sorted_indx = torch.squeeze(torch.argsort(pred_y, dim=0, descending=True))
+  #print('pred_y_sorted_indx ', pred_y_sorted_indx)
+  pred_y_sorted = pred_y[pred_y_sorted_indx]
+  #print('pred_y_sorted ', pred_y_sorted.shape, pred_y_sorted)
+  y_sorted = y[pred_y_sorted_indx]
+
+  recall = torch.sum(y_sorted[:k])/torch.sum(y_sorted)
+  return toNumpy(recall)
 
 def ZSTL_AvgPrecision(attr_test, x, y, ZSTL_model):
     attr_test = attr_test.to(ZSTL_model.device)
     #attr_test = attr_test.to(ZSTL_model.device)
     w_pred = ZSTL_model.task_transfer(attr_test)
     #print(w_pred.size(), x.size())
-    #pred = getPred(x, w_pred, self.model, self.model_shape)
+
     mAP_atK = torch.tensor(0.0, requires_grad=False, dtype=float)
     x = x.to(ZSTL_model.device)
     num_task = torch.tensor(y.size()[0], dtype=float)
     precision_atK = 0.0
+    recall_atK = 0.0
     for t in range(y.size()[0]):
         cur_w = w_pred[:, t].unsqueeze(0).float()
         pred = getPred_csr(x.float(), cur_w, ZSTL_model.model, ZSTL_model.model_shape).cpu()
         #print(y[t,:].shape)
         pred_y_sorted, y_sorted = sortAtk(y[t,:], pred, 100)
+
         mAP_atK += cal_AvgPrecision_k(pred_y_sorted, y_sorted, k=100)
-        precision_atK += precision_recall(y_sorted, pred_y_sorted)
-        #a = ppp
+        precision_atK += precision(y_sorted, pred_y_sorted)
+        recall_atK += getRecall_k(y[t,:], pred, k=100)
+        
+       
     mAP = mAP_atK/num_task
     precision_atK = precision_atK/toNumpy(num_task)
-    print('mAP at 100 ', mAP, 'num task ', num_task, 'precision at k', precision_atK)
+    recall_atK = recall_atK/toNumpy(num_task)
+    print('mAP at 100 ', mAP, 'num task ', num_task, 'precision at k', precision_atK, \
+          'recall at k', recall_atK)
     
     del x, w_pred, attr_test, cur_w, ZSTL_model
     torch.cuda.empty_cache()
@@ -415,7 +421,6 @@ class Dataset_hetrec(torch.utils.data.Dataset):
         self.artistID_to_X_row = detailed_data['artistID_to_X_row']
         self.tag_to_x_col = detailed_data['tag_to_x_col']
         #print('tag_to_x_col ',len(list(self.tag_to_x_col.keys())))
-        #print
         self.device = device
 
         
@@ -473,10 +478,6 @@ class Dataset_hetrec(torch.utils.data.Dataset):
             self.x = np.concatenate([ones, self.x], axis=1)
         print('x shape ', self.x.shape)
 
-        
-        # print('avg listen ', np.sum(self.x))
-        # print('avg tag ', tag_len/len(self.compressed_data), tag_len)
-        # print('num not in ', len(not_inLst))
 
   def genW_LR(self,):
         
@@ -512,15 +513,14 @@ class Dataset_hetrec(torch.utils.data.Dataset):
             #print('task y', task_y.shape, 'task x',task_x.shape)
             cur_w = CSR_train(task_x, task_y, 200, 1e-4, self.model, self.device)
             self.param[k] = np.expand_dims(self.vectorize(cur_w), axis=0)
-            
-            #a = ppppp
+
             # print('acc ', np.sum(pred_y==task_y)/task_y.shape[0])
-            # self.param[k] = clf.coef_
-        #print(self.param[k].shape)
+
         self.shape_record = {}
         for i, w in enumerate(cur_w):
             self.shape_record[i] = [w.shape]
         print('shape record ', self.shape_record)
+
   def __len__(self):
         'Denotes the total number of samples'
         return len(self.compressed_data)
@@ -551,7 +551,6 @@ class Dataset_hetrec(torch.utils.data.Dataset):
         a = np.expand_dims(a, axis=0)
       
         w = self.param[k]
-        #w = np.expand_dims(self.vectorize(w), axis=0)
 
         if self.pahse == 'Normal':
             selected_data = item[1]
@@ -603,7 +602,6 @@ def CSR_train(task_x, task_y, num_epochs, learning_rate, model, device):
         loss.backward()
         optimizer.step()
         
-        #aa =bb
         # if (epoch+1) % 100 == 0:    
         #   with torch.no_grad():
         #     train_loss = loss.item() 
@@ -616,10 +614,6 @@ def CSR_train(task_x, task_y, num_epochs, learning_rate, model, device):
 
         #   print('====> Epoch: {} Average loss: {:.4f}; ACC {}'.format(
         #         epoch+1, train_loss, acc))
-        
-    # print('pred_y ', pred_y)
-    # print('y ', task_y)
-    #print('compare ', pred_y==task_y)
     
     weights = []
     for w in model.parameters():
