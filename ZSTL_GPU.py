@@ -9,12 +9,12 @@ import torch.nn.functional as F
 import pickle
 import itertools
 import tqdm
-# import hypergrad as hg
 from mlmodel import *
 import utils
 import numpy as np
 from sparsemax import Sparsemax
 from argparse import ArgumentParser
+import sklearn
 
 def getPred_regress(x_loss, w_pred, model, model_shape):
   reshaped_w = utils.reshape_w(w_pred, model_shape)    
@@ -69,6 +69,13 @@ class ZSTL:
             #self.loss = nn.BCEWithLogitsLoss()
             self.loss = self.sigmoid_loss
             self.metric = self.task_transfer_bi_acc
+            self.getPred = getPred_binClass
+            self.getPred_batch = self.getPred_batch_class
+
+        elif param_dict['loss'] == 'mAP':
+            #self.loss = nn.BCEWithLogitsLoss()
+            self.loss = self.sigmoid_loss
+            self.metric = self.task_transfer_precision
             self.getPred = getPred_binClass
             self.getPred_batch = self.getPred_batch_class
         
@@ -138,7 +145,7 @@ class ZSTL:
             align_loss.backward()
             self.align_opt.step()
 
-            if (i+1) % 20 == 0 or i == 0:
+            if (i+1) % 200 == 0 or i == 0:
                 test_loss_batch = self.metric(test_a, test_x, test_y)
                 test_l_lst.append(utils.toNumpy(test_loss_batch.cpu().clone().detach().requires_grad_(False)))
                 train_metric_batch = self.metric(train_a,  train_x, train_y)
@@ -246,6 +253,30 @@ class ZSTL:
         del num_data, num_task, attr_test, x, y
         torch.cuda.empty_cache()
         return mean_acc
+
+    def task_transfer_precision(self, attr_test, x, y):
+        w_pred = self.task_transfer(attr_test)
+        #print(w_pred.size(), x.size())
+        precision = torch.tensor(0.0, requires_grad=False, dtype=float).to(self.device) #new var
+        num_data = torch.tensor(y[0,:].size()[0], dtype=float).to(self.device)
+        num_task = torch.tensor(y.size()[0], dtype=float).to(self.device)
+        for t in range(x.size()[0]):
+            cur_w = w_pred[:, t].unsqueeze(0).float()
+            pred = self.getPred(x[t,:].float(), cur_w, self.model, self.model_shape)
+            pred[pred>=0.5] = torch.ones_like(pred[pred>=0.5], device=self.device)
+            pred[pred<0.5] = torch.zeros_like(pred[pred<0.5], device=self.device)
+            # TP = torch.sum(pred == y[t,:])
+            # precision += TP/torch.sum(pred)
+            p = sklearn.metrics.precision_score(pred.clone().detach().cpu(), \
+            y[t,:].clone().detach().cpu(), average='micro')
+            precision += torch.tensor(p, requires_grad=False, dtype=float).to(self.device)
+            #print('precision cal ', p)
+            
+        mean_precision = precision/num_task
+        #print('mean_precision ', mean_precision, precision, num_task)
+        del num_data, num_task, attr_test, x, y,
+        torch.cuda.empty_cache()
+        return mean_precision
 
     def task_transfer(self, attr_test):
         '''
