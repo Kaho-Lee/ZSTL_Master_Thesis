@@ -66,14 +66,12 @@ class ZSTL:
             self.getPred = getPred_regress
             self.getPred_batch = self.getPred_batch_regress
         elif param_dict['loss'] == 'binary class':
-            #self.loss = nn.BCEWithLogitsLoss()
             self.loss = self.sigmoid_loss
             self.metric = self.task_transfer_bi_acc
             self.getPred = getPred_binClass
             self.getPred_batch = self.getPred_batch_class
 
         elif param_dict['loss'] == 'mAP':
-            #self.loss = nn.BCEWithLogitsLoss()
             self.loss = self.sigmoid_loss
             self.metric = self.task_transfer_precision
             self.getPred = getPred_binClass
@@ -85,7 +83,6 @@ class ZSTL:
         self.w_r = 0.001*torch.eye(self.dm, requires_grad=True,device=self.device)
         self.hp = [self.w_r.clone().detach().requires_grad_(True).to(self.device), \
             self.w_kb.clone().detach().requires_grad_(True).to(self.device)]
-        #self.hp = [torch.eye(self.dm, requires_grad=True)]
         self.a_kb_opt = [self.a_kb.clone().detach().requires_grad_(True).to(self.device)]
         self.outer_opt = torch.optim.Adam(self.hp, lr=self.param_dict['outer lr'])
         self.align_opt = torch.optim.Adam(self.a_kb_opt, lr=self.param_dict['align lr'])
@@ -106,7 +103,6 @@ class ZSTL:
         return loss
 
     def train(self, train_loader, test_loader, max_iter = 1000):
-        #need mannual set to gpu
         test_batch = next(iter(test_loader))
         test_a, test_w, test_x, test_y = test_batch[0].float().to(self.device), test_batch[1].float().to(self.device), \
             test_batch[2].float().to(self.device), test_batch[3].float().to(self.device)
@@ -122,15 +118,13 @@ class ZSTL:
         train_l_lst = []
         test_l_lst = []
         for i in range(max_iter):
-            #need mannual set to gpu
             train_batch = next(iter(train_loader))
             train_a, train_w, train_x, train_y = train_batch[0].float().to(self.device), train_batch[1].float().to(self.device),\
                 train_batch[2].float().to(self.device), train_batch[3].float().to(self.device)
-            #print(train_a.shape, train_w.shape, train_x.shape, train_y.shape)
             train_a = train_a.squeeze().t()
             train_w = train_w.squeeze().t()
             # print('train ',train_a.shape, train_w.shape, train_x.shape, train_y.shape)
-            # a = ppp
+            
             self.outer_opt.zero_grad()
             train_loss_batch = self.task_transfer_loss(train_a, train_x, train_y)
             o_loss = train_loss_batch + self.rho*torch.pow(torch.norm(self.hp[1]), 2)
@@ -141,7 +135,6 @@ class ZSTL:
             self.align_opt.zero_grad()
             align_loss = self.align_loss(train_w, self.hp[1].clone().detach().requires_grad_(False), \
                 train_a)
-            #print('align loss ', align_loss)
             align_loss.backward()
             self.align_opt.step()
 
@@ -265,8 +258,6 @@ class ZSTL:
             pred = self.getPred(x[t,:].float(), cur_w, self.model, self.model_shape)
             pred[pred>=0.5] = torch.ones_like(pred[pred>=0.5], device=self.device)
             pred[pred<0.5] = torch.zeros_like(pred[pred<0.5], device=self.device)
-            # TP = torch.sum(pred == y[t,:])
-            # precision += TP/torch.sum(pred)
             p = sklearn.metrics.precision_score(pred.clone().detach().cpu(), \
             y[t,:].clone().detach().cpu(), average='micro')
             precision += torch.tensor(p, requires_grad=False, dtype=float).to(self.device)
@@ -298,7 +289,6 @@ class ZSTL:
         #print('affinity ',affinity.size())
         
         c_newnew = self.atten_activation(affinity) 
-        #print('check softmax sum ', torch.sum(c_newnew, dim=1, keepdim=True))
         w = torch.matmul(c_newnew, w_kbb.t())
 
         del w_kbb, e_item, e_kbb
@@ -306,8 +296,6 @@ class ZSTL:
         return w.t()
 
     def Dot_Attention(self, e_item, e_kbb):
-        #dim = e_item.size()[0]
-        #print('dim ', dim)
         affinity = torch.matmul(e_item.t(), self.hp[0])
         affinity = torch.matmul(affinity, e_kbb)
 
