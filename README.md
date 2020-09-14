@@ -1,4 +1,4 @@
-# Zero-Shot Task Transfer LearningUsing Relational Attention
+# Zero-Shot Task Transfer Learning Using Relational Attention
 ## MSc Project on zero-shot task transfer learning using relational attention
 
 ### Config
