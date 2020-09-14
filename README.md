@@ -1,4 +1,4 @@
-# ZSTL_Master_Thesis
+# Zero-Shot Task Transfer LearningUsing Relational Attention
 ## MSc Project on zero-shot task transfer learning using relational attention
 
 ### Config
