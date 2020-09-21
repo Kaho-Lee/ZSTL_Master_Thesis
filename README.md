@@ -27,7 +27,7 @@ Using the implementation from https://github.com/KrisKorrel/sparsemax-pytorch
 
 1. For AwA and LastFM, 
 
-    1. Run dataset_download.sh to get AwA2 and LastFM dataset
+    1. Run 'dataset_download.sh' to get AwA2 and LastFM dataset
 
     2. run the relevant feature extraction jupyter notebook at 'Data_Processing' directory to form the tasks dataset
 
