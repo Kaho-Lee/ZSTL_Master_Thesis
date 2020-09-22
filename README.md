@@ -1,6 +1,8 @@
 # Zero-Shot Task Transfer Learning Using Relational Attention
 ## MSc Project on zero-shot task transfer learning using relational attention
 
+ZSTL_GPU.py is the main model file for this project
+
 ### Config
 
 - python 3.6.9
