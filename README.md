@@ -1,5 +1,5 @@
 # Zero-Shot Task Transfer Learning Using Relational Attention
-## MSc Project on zero-shot task transfer learning using relational attention
+## This is the repository for UCL MSc in Data Science and Machine Learning Thesis. Zero-Shot Task Transfer Learning Using Relational Attention
 
 ZSTL_GPU.py is the main model file for this project
 
