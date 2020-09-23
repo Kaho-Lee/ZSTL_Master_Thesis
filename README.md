@@ -45,3 +45,5 @@ Using the implementation from https://github.com/KrisKorrel/sparsemax-pytorch
 1. For synthetic experiement, run the relevant ZSTL_xxx.ipynb script at the current direcoty
 
 2. For real dataset experiment, place the relevant ZSTL_xxx.ipynb script at 'Experiment' directory into the same directory as this script and run the script
+
+Thesis will be available online upon the degree awarded.
